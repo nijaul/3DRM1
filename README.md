@@ -110,3 +110,15 @@ The renderer still falls back to the existing classic presentation when WebGL is
 ## V2.0.1 — Horse visibility fix
 
 Fixed an initialization bug introduced by Horse Model 2.0: the renderer reset each horse's visual record with only position and phase, while the new model immediately expected per-horse animation DNA (cadence, stride, bounce, neck/tail/jockey motion, and fore bias). Those undefined values propagated into transforms as NaN when the race went live, making the WebGL horses disappear. The reset path now initializes the complete animation record, with a defensive backfill for older visual records.
+
+
+## Horse Model 2.0 Enhanced Anatomy
+
+This build adds a second procedural horse pass focused on silhouette and motion:
+- longer racing proportions and stronger shoulder/hindquarter mass
+- three-segment neck/head treatment and more detailed muzzle/face
+- four-beat procedural gallop with speed-sensitive stride and suspension
+- two-bone procedural leg IK with distinct fore/hind bend behavior
+- fetlock/hoof geometry, mane and tail inertia, and rider posture changes
+- deterministic per-horse cadence/body-roll variation
+- individually finished runners settle into a still pose while remaining runners continue galloping

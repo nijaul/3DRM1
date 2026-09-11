@@ -1743,7 +1743,8 @@
           neckMotion:.78+seededUnit(seed+41)*.34,
           tailMotion:.80+seededUnit(seed+53)*.42,
           jockeyMotion:.82+seededUnit(seed+67)*.26,
-          foreBias:seededUnit(seed+79)*.16-.08
+          foreBias:seededUnit(seed+79)*.16-.08,
+          bodyRoll:.88+seededUnit(seed+91)*.28
         });
       });
     }
@@ -2075,7 +2076,8 @@
             neckMotion:.78+seededUnit(seed+41)*.34,
             tailMotion:.80+seededUnit(seed+53)*.42,
             jockeyMotion:.82+seededUnit(seed+67)*.26,
-            foreBias:seededUnit(seed+79)*.16-.08
+            foreBias:seededUnit(seed+79)*.16-.08,
+            bodyRoll:.88+seededUnit(seed+91)*.28
           };
 
           this.horseVisuals.set(horse.id,visual);
@@ -2111,6 +2113,9 @@
           if(!Number.isFinite(visual.foreBias)){
             visual.foreBias=seededUnit(seed+79)*.16-.08;
           }
+          if(!Number.isFinite(visual.bodyRoll)){
+            visual.bodyRoll=.88+seededUnit(seed+91)*.28;
+          }
         }
 
         visual.targetX=target.x;
@@ -2141,7 +2146,7 @@
             speed*5.15
           )*
           visual.cadence
-          :.42;
+          :0;
 
         visual.phase+=deltaSeconds*gaitRate;
       });
@@ -3428,54 +3433,95 @@
       darkColor,
       running,
       side,
-      role="front"
+      role="front",
+      strideScale=1
     ){
       /*
-        A four-beat gallop approximation:
-        - planted phases keep the hoof low and near the body
-        - recovery phases fold the knee and lift the hoof
-        - front and hind limbs use slightly different reach
-        This keeps the silhouette readable while remaining cheap.
+        Racehorse gallop pass 2.0
+
+        Each limb follows a real-looking stance/recovery arc:
+          1. hoof is planted and swept backward underneath the body
+          2. hoof releases from the ground
+          3. lower leg folds upward
+          4. leg reaches forward and returns to the ground
+
+        The fore/hind limbs use different bend directions and
+        proportions. This is still procedural, so it stays light
+        enough for large fields on mobile.
       */
-      const cycle=(
-        phase%(Math.PI*2)+
-        Math.PI*2
-      )%(Math.PI*2);
-
-      const sinPhase=Math.sin(cycle);
-      const cosPhase=Math.cos(cycle);
-
-      const lift=Math.pow(
-        Math.max(0,sinPhase),
-        1.7
-      );
-
-      const drive=sinPhase;
+      const TAU=Math.PI*2;
+      const cycle=((phase%TAU)+TAU)%TAU;
+      const u=cycle/TAU;
       const isFront=role==="front";
 
-      const upperLength=isFront?1.03:1.10;
-      const lowerLength=isFront?.94:1.00;
+      const l1=isFront?1.08:1.00;
+      const l2=isFront?.96:1.03;
 
-      const reach=
-        drive*
+      const stance=.43+(isFront?.015:.025);
+      const release=stance;
+      const stride=
+        strideScale*
         (
           isFront
-            ?.30
-            :.26
-        )+
-        (
-          isFront
-            ?.02
-            :-.04
+            ?1.14
+            :1.06
         );
 
-      const kneeLift=
-        lift*
-        (
-          isFront
-            ?.34
-            :.42
-        );
+      let footForward;
+      let lift=0;
+
+      if(u<release){
+        const s=u/release;
+
+        /*
+          During stance the body passes over the planted hoof,
+          so the hoof travels smoothly rearward relative to the body.
+        */
+        const eased=s*s*(3-2*s);
+        footForward=
+          (isFront?.56:.48)-
+          (
+            isFront
+              ?1.38
+              :1.25
+          )*
+          eased*
+          stride;
+
+      }else{
+        const s=
+          clamp(
+            (u-release)/
+            (1-release),
+            0,
+            1
+          );
+
+        const eased=s*s*(3-2*s);
+        const arc=Math.sin(Math.PI*s);
+
+        footForward=
+          (isFront?-0.82:-0.76)+
+          (
+            isFront
+              ?1.72
+              :1.57
+          )*
+          eased*
+          stride;
+
+        lift=
+          Math.pow(
+            Math.max(0,arc),
+            1.16
+          )*
+          (
+            isFront
+              ?.72
+              :.63
+          )*
+          strideScale;
+      }
 
       const hip=[
         hipX,
@@ -3483,95 +3529,221 @@
         hipZ
       ];
 
-      const knee=[
+      const hoofY=
+        Math.max(
+          .18,
+          .17+lift
+        );
+
+      const hoof=[
         hipX+
-          reach,
-        hipY-
-          upperLength+
-          kneeLift,
+          (
+            footForward-
+            (
+              isFront
+                ?0.08
+                :-.02
+            )
+          ),
+        hoofY,
+        hipZ+
+          side*
+          (
+            .055+
+            lift*.055
+          )
+      ];
+
+      /*
+        Two-bone IK places a believable knee/hock between the hip
+        and hoof. The bend direction differs between fore and hind
+        limbs, which avoids the "four identical sticks" look.
+      */
+      const dx=hoof[0]-hip[0];
+      const dy=hoof[1]-hip[1];
+      const dz=hoof[2]-hip[2];
+
+      const planarDistance=
+        Math.max(
+          .001,
+          Math.hypot(
+            dx,
+            dy
+          )
+        );
+
+      const maxReach=
+        l1+
+        l2-
+        .035;
+
+      const distance=
+        clamp(
+          planarDistance,
+          Math.abs(l1-l2)+.035,
+          maxReach
+        );
+
+      const nx=
+        dx/planarDistance;
+      const ny=
+        dy/planarDistance;
+
+      const a=
+        (
+          l1*l1-
+          l2*l2+
+          distance*distance
+        )/
+        (
+          2*
+          distance
+        );
+
+      const h=
+        Math.sqrt(
+          Math.max(
+            .001,
+            l1*l1-
+            a*a
+          )
+        );
+
+      const baseX=
+        hip[0]+
+        nx*a;
+      const baseY=
+        hip[1]+
+        ny*a;
+
+      /*
+        Fore knees fold forward. Hind hocks fold subtly backward.
+        Alternating the bend side keeps the two sides of the horse
+        from looking mirrored or robotic.
+      */
+      const bendDirection=
+        (
+          isFront
+            ?1
+            :-1
+        )*
+        (
+          side>0
+            ?1
+            :-.88
+        );
+
+      const perpX=-ny;
+      const perpY=nx;
+
+      const knee=[
+        baseX+
+          perpX*
+          h*
+          bendDirection,
+        baseY+
+          perpY*
+          h*
+          bendDirection,
         hipZ+
           (
             side*
             (
-              .035+
-              lift*.055
+              .10+
+              lift*.10
             )
           )
       ];
 
       /*
-        The lower segment folds back underneath the horse during
-        recovery, then extends forward on impact.
+        During stance the fetlock stays compressed. During flight
+        it opens, which makes the silhouette noticeably more
+        horse-like at speed.
       */
-      const lowerSwing=
-        (
-          drive*
-          (
-            isFront
-              ?.36
-              :.31
-          )
-        )-
+      const fetlockLift=
         lift*
         (
           isFront
-            ?.34
-            :.24
-        )+
-        (
-          isFront
-            ?-.02
-            :.06
+            ?.18
+            :.12
         );
 
-      const hoof=[
-        knee[0]+
-          Math.sin(lowerSwing)*
-          lowerLength,
-        Math.max(
-          .16,
-          knee[1]-
-          Math.cos(lowerSwing)*
-          lowerLength
-        ),
-        hipZ+
-          side*
+      const fetlock=[
+        hoof[0]+
           (
-            .045+
-            lift*.035
-          )
+            isFront
+              ?.08
+              :-.04
+          )*
+          strideScale,
+        hoof[1]+
+          fetlockLift,
+        hoof[2]
       ];
 
       this.drawSegment(
         hip,
         knee,
-        .108,
+        isFront?.12:.125,
         color
       );
 
       this.drawSegment(
         knee,
-        hoof,
-        .080,
+        fetlock,
+        isFront?.088:.094,
         darkColor
+      );
+
+      this.drawSegment(
+        fetlock,
+        hoof,
+        isFront?.062:.068,
+        darkColor
+      );
+
+      /*
+        Fetlock and hoof blocks provide a little extra silhouette
+        and catch highlights in the closer camera shots.
+      */
+      this.drawMesh(
+        "sphere",
+        mat4TRS(
+          fetlock[0],
+          fetlock[1],
+          fetlock[2],
+          0,0,0,
+          .13,
+          .13,
+          .115
+        ),
+        darkColor,
+        {
+          alpha:1
+        }
       );
 
       this.drawMesh(
         "cube",
         mat4TRS(
-          hoof[0]+.10,
-          Math.max(
-            .12,
-            hoof[1]-.035
-          ),
+          hoof[0]+
+            (
+              isFront
+                ?.08
+                :.05
+            ),
+          .13,
           hoof[2],
-          0,0,
-          -.05,
-          .43,
-          .14,
-          .25
+          0,
+          0,
+          isFront
+            ?-.08
+            :.04,
+          .34,
+          .12,
+          .24
         ),
-        [.050,.036,.028]
+        [.038,.029,.023]
       );
     }
 
@@ -3583,18 +3755,16 @@
         horse.position===1;
 
       /*
-        Crucially, "running" belongs to the individual runner,
-        not the global race phase. The first finisher changes the
-        race phase to "finished", but the rest of the field keeps
-        galloping until each horse crosses.
+        Animation ownership is per horse. Once a runner crosses
+        the line it settles into a compact resting pose while the
+        unfinished runners continue through their gallop cycle.
       */
       const running=
         (
           appState?.phase==="live"||
           appState?.phase==="finished"
         )&&
-        !horse.finished&&
-        !this.reducedMotion;
+        !horse.finished;
 
       const speed=clamp(
         Number(horse.currentSpeed)||0,
@@ -3612,114 +3782,140 @@
       const detail=
         this.qualitySettings().horseDetail;
 
+      const TAU=Math.PI*2;
       const cycle=
-        (
-          visual.phase%
-          (Math.PI*2)
-        )+
-        Math.PI*2;
-
-      const normalizedCycle=
-        cycle%
-        (Math.PI*2);
+        ((visual.phase%TAU)+TAU)%TAU;
 
       const profile=visual;
 
       /*
-        A longer stride is visible as more limb extension and a
-        slightly longer body pitch. Cadence still follows speed.
+        Realistic motion:
+          - suspension lifts the torso before hoof contact
+          - the back compresses at landing
+          - head/neck counter-bob slightly later than the body
+          - the jockey follows the horse's center of gravity
       */
-      const strideWave=
-        Math.sin(
-          normalizedCycle
-        );
-
-      const suspension=
+      const drive=Math.sin(cycle);
+      const suspensionWave=
         Math.max(
           0,
           Math.sin(
-            normalizedCycle+
-            Math.PI*.22
+            cycle+
+            Math.PI*.32
           )
         );
 
-      const bodyBounce=
-        running
-          ?(
-            Math.sin(
-              normalizedCycle*2
-            )*
-            (
-              .035+
-              .055*
-              speedFactor*
-              profile.bounce
-            )+
-            suspension*
-            .018
-          )
-          :0;
+      const bodyBounce=running
+        ?(
+          suspensionWave*
+          (
+            .032+
+            .052*
+            speedFactor*
+            profile.bounce
+          )+
+          Math.sin(
+            cycle*2+
+            .22
+          )*
+          (
+            .018+
+            .028*
+            speedFactor
+          )*
+          profile.bounce
+        )
+        :0;
 
-      const bodyLean=
+      const bodyLift=
         running
-          ?(
-            .012+
-            speedFactor*.024+
-            profile.foreBias
-          )
+          ?suspensionWave*
+           (
+             .014+
+             .024*
+             speedFactor
+           )
           :0;
 
       const bodyY=
-        1.83+
-        bodyBounce;
+        1.88+
+        bodyBounce+
+        bodyLift;
 
-      const bodyPitch=
-        running
-          ?(
-            Math.sin(
-              normalizedCycle*2+
-              Math.PI*.35
-            )*
-            (
-              .018+
-              .028*
-              speedFactor
-            )
+      const bodyPitch=running
+        ?(
+          Math.sin(
+            cycle*2+
+            Math.PI*.20
+          )*
+          (
+            .016+
+            .028*
+            speedFactor
+          )*
+          (
+            .90+
+            profile.stride*.20
           )
-          :0;
+        )
+        :0;
 
-      const neckBob=
-        running
-          ?Math.sin(
-              normalizedCycle+
-              Math.PI*.65
-            )*
-            (
-              .035+
-              .052*
-              speedFactor
-            )*
-            profile.neckMotion
-          :0;
+      const bodyRoll=running
+        ?Math.sin(
+            cycle+
+            Math.PI*.56
+          )*
+          (
+            .009+
+            .018*
+            speedFactor
+          )*
+          profile.bodyRoll
+        :0;
 
-      const headBob=
-        running
-          ?Math.sin(
-              normalizedCycle+
-              Math.PI*.95
-            )*
-            (
-              .025+
-              .034*
-              speedFactor
-            )
-          :0;
+      const neckBob=running
+        ?Math.sin(
+            cycle+
+            Math.PI*.60
+          )*
+          (
+            .028+
+            .050*
+            speedFactor
+          )*
+          profile.neckMotion
+        :0;
+
+      const headBob=running
+        ?Math.sin(
+            cycle+
+            Math.PI*.93
+          )*
+          (
+            .018+
+            .034*
+            speedFactor
+          )
+        :0;
+
+      const neckDrive=running
+        ?Math.sin(
+            cycle+
+            Math.PI*.72
+          )*
+          (
+            .025+
+            .050*
+            speedFactor
+          )*
+          profile.neckMotion
+        :0;
 
       const strideExtension=
         profile.stride*
         (
-          .88+
-          speedFactor*.20
+          .94+
+          speedFactor*.16
         );
 
       this.drawHorseShadow(
@@ -3731,438 +3927,644 @@
       );
 
       /*
-        Rear/near legs are intentionally offset. This produces a
-        readable gallop rather than synchronized walking legs.
+        The four limbs are phase-separated in the order commonly
+        seen in a racing gallop. The tiny asymmetries prevent the
+        field from looking like duplicated animation clips.
       */
       const legData=[
         {
           x:-1.02,
-          z:-.36,
-          offset:0,
+          z:-.43,
+          offset:.00,
           side:-1,
           role:"hind"
         },
         {
-          x:.92,
-          z:-.36,
-          offset:Math.PI*.98,
+          x:-.88,
+          z:.38,
+          offset:Math.PI*.24,
           side:1,
           role:"hind"
         },
         {
-          x:-.90,
-          z:.36,
-          offset:Math.PI*.48,
+          x:.82,
+          z:.40,
+          offset:Math.PI*.50,
           side:1,
           role:"front"
         },
         {
-          x:1.05,
-          z:.36,
-          offset:Math.PI*1.48,
+          x:1.00,
+          z:-.37,
+          offset:Math.PI*.77,
           side:-1,
           role:"front"
         }
       ];
 
-      legData.forEach((leg,index)=>{
-        const legPhase=
-          visual.phase+
-          leg.offset+
-          (
-            index%2===0
-              ?.055
-              :-.045
-          )*
-          profile.stride;
+      legData.forEach(
+        (
+          leg,
+          index
+        )=>{
+          const phase=
+            visual.phase+
+            leg.offset+
+            (
+              index%2===0
+                ?.035
+                :-.027
+            )*
+            profile.stride;
 
-        const legColor=
-          index<2
-            ?scaleColor(
-                colors.main,
-                .72
-              )
-            :colors.main;
+          const legColor=
+            index===1||
+            index===3
+              ?mixColor(
+                  colors.main,
+                  colors.light,
+                  .06
+                )
+              :scaleColor(
+                  colors.main,
+                  .76
+                );
 
-        const hipShift=
-          leg.role==="front"
-            ?strideExtension*.06
-            :-strideExtension*.05;
+          const hipShift=
+            leg.role==="front"
+              ?strideExtension*.055
+              :-strideExtension*.045;
 
-        this.drawHorseLeg(
-          visual.x+
-            leg.x+
-            hipShift,
-          bodyY-.25,
-          visual.z+
-            leg.z,
-          legPhase,
-          legColor,
-          colors.dark,
-          running,
-          leg.side,
-          leg.role
-        );
-      });
+          this.drawHorseLeg(
+            visual.x+
+              leg.x+
+              hipShift,
+            bodyY-
+              .24+
+              suspensionWave*
+              .018,
+            visual.z+
+              leg.z,
+            phase,
+            legColor,
+            colors.dark,
+            running,
+            leg.side,
+            leg.role,
+            strideExtension
+          );
+        }
+      );
 
       /*
-        Main barrel. The separate shoulder and hindquarter volumes
-        give the silhouette much more horse-like mass.
+        Belly volume — the real "barrel" should read as one animal
+        rather than a single capsule.
       */
       this.drawMesh(
         "sphere",
         mat4TRS(
-          visual.x,
+          visual.x-.12,
           bodyY,
           visual.z,
           0,
-          bodyPitch,
-          -bodyLean,
-          3.48+
-            speedFactor*.08,
-          1.20+
-            speedFactor*.03,
-          1.06
+          bodyRoll,
+          bodyPitch+
+            .005,
+          3.72+
+            speedFactor*.10,
+          1.18+
+            speedFactor*.04,
+          1.08
         ),
         colors.main,
         {
           rim:
             selected||leader
-              ?.32
+              ?.30
               :.08
         }
       );
 
-      /* Hindquarter mass */
+      /*
+        Rib cage / barrel highlight.
+      */
       this.drawMesh(
         "sphere",
         mat4TRS(
-          visual.x-.74,
+          visual.x-.34,
+          bodyY+.04,
+          visual.z,
+          0,
+          bodyRoll*.8,
+          bodyPitch*.78,
+          2.26,
+          1.04,
+          1.04
+        ),
+        mixColor(
+          colors.main,
+          colors.light,
+          .09
+        ),
+        {rim:.045}
+      );
+
+      /*
+        Strong hindquarters — important to the silhouette of a
+        galloping thoroughbred.
+      */
+      this.drawMesh(
+        "sphere",
+        mat4TRS(
+          visual.x-1.07,
           bodyY+.08,
           visual.z,
           0,
-          bodyPitch*.80,
-          -.04,
-          1.72,
-          1.18,
-          1.03
+          bodyRoll*.70,
+          bodyPitch*.82,
+          1.62,
+          1.22,
+          1.06
         ),
         mixColor(
           colors.main,
           colors.light,
-          .13
+          .16
         ),
-        {rim:.055}
+        {rim:.065}
       );
 
-      /* Shoulder/chest mass */
+      /* Shoulder / withers */
       this.drawMesh(
         "sphere",
         mat4TRS(
-          visual.x+.76,
-          bodyY+.10,
+          visual.x+.79,
+          bodyY+.15,
           visual.z,
           0,
-          bodyPitch*1.15,
-          .075,
-          1.52,
-          1.19,
-          1.03
+          bodyRoll*.75,
+          bodyPitch*1.18,
+          1.56,
+          1.24,
+          1.05
         ),
         mixColor(
           colors.main,
           colors.light,
-          .25
+          .24
         ),
-        {rim:.075}
+        {rim:.085}
       );
 
-      /* Chest highlight */
+      /* Chest projecting forward */
       this.drawMesh(
         "sphere",
         mat4TRS(
-          visual.x+1.18,
-          bodyY+.02,
+          visual.x+1.25,
+          bodyY+.01,
           visual.z,
           0,
-          .02,
-          .10,
-          .76,
-          .92,
-          .90
+          bodyRoll,
+          bodyPitch+
+            .02,
+          .74,
+          .94,
+          .94
         ),
         mixColor(
           colors.main,
           colors.light,
-          .14
+          .18
+        )
+      );
+
+      /* Underbody shadow/belly edge */
+      this.drawMesh(
+        "sphere",
+        mat4TRS(
+          visual.x-.10,
+          bodyY-.30,
+          visual.z,
+          0,
+          0,
+          bodyPitch*.55,
+          2.36,
+          .63,
+          .92
+        ),
+        mixColor(
+          colors.main,
+          colors.dark,
+          .22
         )
       );
 
       /*
-        Neck now has a forward arc instead of one straight segment.
+        Neck is built as a three-point curve. The lower section is
+        thicker at the withers and tapers toward the poll.
       */
-      const neckStart=[
-        visual.x+1.06,
-        bodyY+.29,
+      const neckBase=[
+        visual.x+1.03,
+        bodyY+.31,
         visual.z
       ];
 
       const neckMid=[
-        visual.x+1.43,
-        bodyY+.73+
-          neckBob,
+        visual.x+1.43+
+          neckDrive*.38,
+        bodyY+.78+
+          neckBob+
+          neckDrive*.20,
         visual.z
       ];
 
-      const neckEnd=[
+      const neckTop=[
         visual.x+1.82+
-          speedFactor*.05,
-        bodyY+1.18+
+          speedFactor*.05+
+          neckDrive*.28,
+        bodyY+1.22+
           neckBob,
         visual.z
       ];
 
       this.drawSegment(
-        neckStart,
+        neckBase,
         neckMid,
-        .41,
+        .43,
         mixColor(
           colors.main,
           colors.light,
-          .14
+          .12
         ),
         {rim:.12}
       );
 
       this.drawSegment(
         neckMid,
-        neckEnd,
+        neckTop,
         .34,
         mixColor(
           colors.main,
           colors.light,
-          .10
+          .08
         ),
-        {rim:.10}
+        {rim:.09}
+      );
+
+      /*
+        Throatlatch / underside plane.
+      */
+      this.drawSegment(
+        [
+          neckBase[0]+.08,
+          neckBase[1]-.02,
+          neckBase[2]
+        ],
+        [
+          neckTop[0]-.06,
+          neckTop[1]-.10,
+          neckTop[2]
+        ],
+        .16,
+        colors.dark
       );
 
       /* Head / poll */
       this.drawMesh(
         "sphere",
         mat4TRS(
-          visual.x+2.13+
-            speedFactor*.03,
-          bodyY+1.35+
+          visual.x+2.17+
+            speedFactor*.03+
+            neckDrive*.08,
+          bodyY+1.37+
             neckBob+
             headBob,
           visual.z,
           0,
-          -.10+
-            headBob*.10,
-          -.12,
-          1.30,
-          .78,
-          .73
+          .035,
+          -.10,
+          1.38,
+          .75,
+          .70
         ),
         colors.main,
-        {rim:.13}
+        {rim:.12}
       );
 
-      /* Tapered muzzle */
+      /* Long tapered muzzle */
       this.drawMesh(
         "sphere",
         mat4TRS(
-          visual.x+2.62+
-            speedFactor*.04,
-          bodyY+1.21+
+          visual.x+2.67+
+            speedFactor*.06+
+            neckDrive*.05,
+          bodyY+1.22+
             neckBob+
             headBob,
           visual.z,
           0,
-          -.05,
-          -.08,
-          .88,
-          .49,
-          .57
+          -.025,
+          -.07,
+          .92,
+          .47,
+          .56
         ),
         colors.muzzle
       );
 
+      /* Jaw / lower cheek */
+      this.drawMesh(
+        "sphere",
+        mat4TRS(
+          visual.x+2.37,
+          bodyY+1.12+
+            neckBob*.75+
+            headBob*.7,
+          visual.z,
+          0,
+          0,
+          -.03,
+          .66,
+          .36,
+          .53
+        ),
+        mixColor(
+          colors.main,
+          colors.dark,
+          .22
+        )
+      );
+
       if(detail>0){
-        /* Ears */
-        [-.18,.18].forEach((zOffset,index)=>{
-          const earTilt=
-            Math.sin(
-              normalizedCycle+
-              index*
-              .65
-            )*
-            .05;
+        /* Ears respond slightly to the gait but stay pointed forward. */
+        [-.18,.18].forEach(
+          (
+            zOffset,
+            index
+          )=>{
+            const earTilt=
+              Math.sin(
+                cycle+
+                index*.50
+              )*
+              (
+                .025+
+                speedFactor*.035
+              );
 
-          this.drawMesh(
-            "cone",
-            mat4TRS(
-              visual.x+1.90+
-                index*.20,
-              bodyY+1.90+
-                neckBob+
-                headBob*.6,
-              visual.z+
-                zOffset,
-              0,
-              0,
-              index===0
-                ?-.14+
-                  earTilt
-                :.06-
-                  earTilt,
-              .25,
-              .60,
-              .24
-            ),
-            colors.dark
-          );
-        });
+            this.drawMesh(
+              "cone",
+              mat4TRS(
+                visual.x+1.92+
+                  index*.19+
+                  neckDrive*.03,
+                bodyY+1.91+
+                  neckBob+
+                  headBob*.55,
+                visual.z+
+                  zOffset,
+                0,
+                0,
+                index===0
+                  ?-.14+
+                    earTilt
+                  :.06-
+                    earTilt,
+                .25,
+                .64,
+                .23
+              ),
+              colors.dark
+            );
+          }
+        );
 
-        /*
-          Eye and blaze are kept small so they read only in the
-          closer camera shots.
-        */
+        /* Eye */
         this.drawMesh(
           "sphere",
           mat4TRS(
-            visual.x+2.30,
-            bodyY+1.50+
+            visual.x+2.39,
+            bodyY+1.52+
               neckBob+
               headBob,
-            visual.z+.34,
+            visual.z+.33,
             0,0,0,
-            .095,.095,.07
+            .09,.09,.07
           ),
-          [.015,.015,.012],
-          {emissive:.18}
+          [.012,.012,.010],
+          {emissive:.22}
         );
 
-        /* Layered mane */
-        for(let index=0;index<5;index++){
-          const maneWave=
+        /* Tiny eye highlight */
+        this.drawMesh(
+          "sphere",
+          mat4TRS(
+            visual.x+2.425,
+            bodyY+1.545+
+              neckBob+
+              headBob,
+            visual.z+.38,
+            0,0,0,
+            .025,.025,.018
+          ),
+          [.78,.78,.70],
+          {emissive:.30}
+        );
+
+        /* Blaze / facial stripe */
+        this.drawSegment(
+          [
+            visual.x+2.42,
+            bodyY+1.74+
+              neckBob+
+              headBob*.6,
+            visual.z+.33
+          ],
+          [
+            visual.x+2.58,
+            bodyY+1.30+
+              neckBob+
+              headBob,
+            visual.z+.32
+          ],
+          .035,
+          [.84,.80,.69],
+          {alpha:.72}
+        );
+
+        /* Layered mane follows speed and airflow. */
+        for(let index=0;index<6;index++){
+          const wave=
             Math.sin(
-              normalizedCycle+
-              index*.55
+              cycle+
+              index*.48+
+              .4
             )*
             (
-              .08+
-              speedFactor*.08
+              .075+
+              speedFactor*.09
             )*
             profile.tailMotion;
+
+          const lean=
+            .42+
+            speedFactor*.26;
 
           this.drawMesh(
             "cone",
             mat4TRS(
               visual.x+
-                1.12+
-                index*.18,
+                1.05+
+                index*.16+
+                wave*.08,
               bodyY+
-                .61+
-                index*.20+
-                neckBob*.5,
+                .54+
+                index*.19+
+                neckBob*.42,
               visual.z-
-                .31+
-                maneWave,
+                .34+
+                wave,
               0,
               0,
-              -.45+
-                maneWave*.30,
-              .18,
-              .54,
-              .16
+              -lean,
+              .17,
+              .55+
+                speedFactor*.08,
+              .15
             ),
             colors.dark
           );
         }
       }
 
-      /* Tail with speed-dependent inertia */
+      /*
+        Tail starts high from the dock and whips outward with
+        inertia. The tip lags the base, which creates a much more
+        natural silhouette at speed.
+      */
+      const tailPhase=
+        cycle+
+        Math.PI*.33;
+
       const tailWave=running
         ?Math.sin(
-            normalizedCycle+
-            Math.PI*.25
+            tailPhase
           )*
           (
-            .26+
-            speedFactor*.18
+            .23+
+            speedFactor*.26
           )*
           profile.tailMotion
         :0;
 
+      const tailLift=running
+        ?Math.max(
+            0,
+            Math.sin(
+              tailPhase+
+              .35
+            )
+          )*
+          (
+            .10+
+            speedFactor*.10
+          )
+        :0;
+
       this.drawSegment(
         [
-          visual.x-1.64,
-          bodyY+.19,
+          visual.x-1.72,
+          bodyY+.22,
           visual.z
         ],
         [
-          visual.x-2.28,
-          bodyY-.14+
-            tailWave*.18,
+          visual.x-2.25,
+          bodyY+.01+
+            tailWave*.15+
+            tailLift,
           visual.z+
-            tailWave
+            tailWave*.72
         ],
-        .19,
+        .20,
         colors.dark
       );
 
       if(detail>0){
         this.drawSegment(
           [
-            visual.x-2.24,
-            bodyY-.13+
-              tailWave*.16,
+            visual.x-2.21,
+            bodyY+.01+
+              tailWave*.15+
+              tailLift,
             visual.z+
-              tailWave
+              tailWave*.72
           ],
           [
-            visual.x-2.74+
-              tailWave*.11,
-            bodyY-.54+
-              tailWave*.20,
+            visual.x-2.83+
+              tailWave*.18,
+            bodyY-.24+
+              tailWave*.26+
+              tailLift,
             visual.z+
-              tailWave*1.30
+              tailWave*1.48
           ],
-          .145,
+          .15,
+          colors.dark
+        );
+
+        this.drawSegment(
+          [
+            visual.x-2.76+
+              tailWave*.16,
+            bodyY-.23+
+              tailWave*.25+
+              tailLift,
+            visual.z+
+              tailWave*1.44
+          ],
+          [
+            visual.x-3.08+
+              tailWave*.10,
+            bodyY-.34+
+              tailWave*.22+
+              tailLift,
+            visual.z+
+              tailWave*1.72
+          ],
+          .09,
           colors.dark
         );
       }
 
-      /* Saddle and post-color cloth */
+      /* Saddle tree and cloth */
       this.drawMesh(
         "cube",
         mat4TRS(
-          visual.x-.12,
-          bodyY+.59,
+          visual.x-.14,
+          bodyY+.61,
           visual.z,
           0,
+          bodyRoll,
           bodyPitch,
-          -.03,
-          1.64,
+          1.72,
           .14,
-          1.20
+          1.23
         ),
-        [.14,.09,.06]
+        [.13,.085,.055]
       );
 
       this.drawMesh(
         "cube",
         mat4TRS(
-          visual.x-.20,
-          bodyY+.49,
+          visual.x-.24,
+          bodyY+.52,
           visual.z,
           0,
+          bodyRoll,
           bodyPitch,
-          -.03,
-          1.48,
-          .49,
-          1.14
+          1.55,
+          .47,
+          1.15
         ),
         colors.silk,
         {
@@ -4175,41 +4577,48 @@
       );
 
       /*
-        Jockey now follows the horse's suspension phase and crouches
-        a little deeper as speed rises.
+        Jockey position follows the horse's center of gravity.
+        Faster horses get a lower, more aerodynamic crouch.
       */
       const jockeyBob=running
         ?Math.sin(
-            normalizedCycle*2+
+            cycle*2+
             Math.PI*.55
           )*
           (
-            .022+
-            speedFactor*.042
+            .018+
+            speedFactor*.038
           )*
           profile.jockeyMotion
         :0;
 
-      const crouch=running
-        ?(
-          .18+
-          .09*speedFactor
-        )
-        :.10;
+      const crouch=
+        .20+
+        .105*
+        speedFactor;
+
+      const jockeyLean=
+        running
+          ?-.14-
+           speedFactor*.09
+          :-.07;
 
       this.drawMesh(
         "sphere",
         mat4TRS(
-          visual.x-.10,
+          visual.x-.10+
+            speedFactor*.05,
           bodyY+1.34+
             jockeyBob,
           visual.z,
           0,
-          -.36-crouch,
-          -.04+bodyPitch*.35,
-          .76,
-          1.18,
-          .72
+          jockeyLean,
+          -.05+
+            bodyPitch*.35,
+          .74,
+          1.20+
+            speedFactor*.04,
+          .70
         ),
         colors.silk,
         {
@@ -4221,100 +4630,122 @@
       );
 
       /*
-        Jockey torso is shifted with the center of gravity, keeping
-        the rider more convincingly tucked over the withers.
+        Rider torso.
       */
       this.drawMesh(
         "sphere",
         mat4TRS(
-          visual.x+.22+
-            speedFactor*.03,
-          bodyY+2.03+
+          visual.x+.25+
+            speedFactor*.08,
+          bodyY+2.00+
             jockeyBob,
           visual.z,
           0,
+          jockeyLean*.72,
           0,
-          0,
-          .55,
-          .60,
+          .53,
+          .63,
           .54
         ),
-        [.74,.52,.37]
+        [.72,.50,.35]
+      );
+
+      /* Helmet/head */
+      this.drawMesh(
+        "sphere",
+        mat4TRS(
+          visual.x+.22+
+            speedFactor*.08,
+          bodyY+2.28+
+            jockeyBob,
+          visual.z,
+          0,
+          -.10+
+            jockeyLean*.30,
+          0,
+          .66,
+          .36,
+          .63
+        ),
+        colors.silk,
+        {rim:.15}
       );
 
       this.drawMesh(
         "sphere",
         mat4TRS(
-          visual.x+.18+
-            speedFactor*.03,
-          bodyY+2.30+
+          visual.x+1.00+
+            speedFactor*.10,
+          bodyY+2.26+
             jockeyBob,
           visual.z,
           0,
-          -.16,
-          -.02,
-          .67,
+          0,
+          0,
           .35,
-          .65
+          .35,
+          .35
         ),
-        colors.silk,
-        {rim:.16}
+        [.73,.54,.40],
+        {rim:.05}
       );
 
       if(detail>0){
+        /*
+          Forearm to rein and lower leg contact.
+        */
         const hand=[
-          visual.x+1.23+
-            strideWave*
-            .07,
+          visual.x+1.31+
+            drive*
+            .08*
+            speedFactor,
           bodyY+1.22+
-            jockeyBob*.60,
-          visual.z+.24
+            jockeyBob*.70,
+          visual.z+.25
         ];
 
         this.drawSegment(
           [
-            visual.x+.15,
-            bodyY+1.55+
+            visual.x+.18+
+              speedFactor*.04,
+            bodyY+1.53+
               jockeyBob,
             visual.z+.25
           ],
           hand,
-          .095,
+          .09,
           colors.silk
         );
 
         this.drawSegment(
           hand,
           [
-            visual.x+2.10+
-              strideWave*
-              .05,
-            bodyY+1.28+
-              headBob*.24,
+            visual.x+2.12+
+              drive*.06,
+            bodyY+1.29+
+              headBob*.20,
             visual.z+.28
           ],
-          .027,
-          [.10,.065,.045]
+          .026,
+          [.09,.055,.038]
         );
 
-        /*
-          Leg/rein contact gives the jockey a clearer racing posture.
-        */
         this.drawSegment(
           [
-            visual.x-.28,
-            bodyY+.92+
-              jockeyBob*.35,
+            visual.x-.22,
+            bodyY+.93+
+              jockeyBob*.34,
             visual.z+.29
           ],
           [
-            visual.x-.88,
-            bodyY+.30+
-              suspension*.08,
+            visual.x-.90+
+              speedFactor*.05,
+            bodyY+.29+
+              suspensionWave*.10,
             visual.z+.31
           ],
-          .11,
-          [.12,.10,.08]
+          .105,
+          [.12,.095,.073]
         );
       }
 
@@ -4322,7 +4753,7 @@
         id:horse.id,
         horse,
         world:[
-          visual.x+1.0,
+          visual.x+1.02,
           bodyY+2.30+
             headBob,
           visual.z
